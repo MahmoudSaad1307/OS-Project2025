@@ -72,7 +72,6 @@ void fault_handler_init()
 	enableModifiedBuffer(0) ;
 	setModifiedBufferLength(1000);
 }
-
 //==================
 // [1] MAIN HANDLER:
 //==================
@@ -108,7 +107,6 @@ void fault_handler(struct Trapframe *tf)
 	}
 	else
 	{
-    
 		before_last_fault_va = last_fault_va;
 		before_last_eip = last_eip;
 		num_repeated_fault = 0;
@@ -166,61 +164,7 @@ void fault_handler(struct Trapframe *tf)
 			/*============================================================================================*/
 			//TODO: [PROJECT'25.GM#3] FAULT HANDLER I - #2 Check for invalid pointers
 			//(e.g. pointing to unmarked user heap page, kernel or wrong access rights),
-			
-			// Check if trying to access kernel space
-			if (fault_va >= KERNEL_BASE) 
-			{
-				cprintf("[%08x] user fault va %08x ip %08x: trying to access kernel\n",
-						faulted_env->env_id, fault_va, tf->tf_eip);
-				env_exit();
-			}
-			
-			// Check if in heap range
-			if (fault_va >= USER_HEAP_START && fault_va < USER_HEAP_MAX) 
-			{
-				uint32* ptr_page_table = NULL;
-				get_page_table(faulted_env->env_page_directory, fault_va, &ptr_page_table);
-				
-				if (ptr_page_table != NULL) 
-				{
-					uint32 pte = ptr_page_table[PTX(fault_va)];
-					
-					// Check if not present and not marked as heap page
-					if ((pte & PERM_PRESENT) == 0) 
-					{
-						if ((pte & PERM_UHPAGE) == 0) 
-						{
-							cprintf("[%08x] user fault va %08x ip %08x: unmarked heap page\n",
-									faulted_env->env_id, fault_va, tf->tf_eip);
-							env_exit();
-						}
-					}
-				}
-			}
-			
-			// Check for write to read-only page
-			uint32* ptr_page_table = NULL;
-			get_page_table(faulted_env->env_page_directory, fault_va, &ptr_page_table);
-			
-			if (ptr_page_table != NULL) 
-			{
-				uint32 pte = ptr_page_table[PTX(fault_va)];
-				
-				// If page exists but not writable
-				if (pte & PERM_PRESENT) 
-				{
-					if (!(pte & PERM_WRITEABLE)) 
-					{
-						// Check if trying to write
-						if (tf->tf_err & FEC_WR) 
-						{
-							cprintf("[%08x] user fault va %08x ip %08x: write to read-only\n",
-									faulted_env->env_id, fault_va, tf->tf_eip);
-							env_exit();
-						}
-					}
-				}
-			}
+			//your code is here
 
 			/*============================================================================================*/
 		}
@@ -278,237 +222,6 @@ void table_fault_handler(struct Env * curenv, uint32 fault_va)
 	{
 		__static_cpt(curenv->env_page_directory, (uint32)fault_va, &ptr_table);
 	}
-#endif
-}
-
-//===============================
-// [2.5] CREATE KERNEL STACK:
-//===============================
-void* create_user_kern_stack(uint32* ptr_user_page_directory)
-{
-	//TODO: [PROJECT'25.GM#3] FAULT HANDLER I - #1 create_user_kern_stack
-	
-	// Allocate kernel stack memory
-	void* stack = kmalloc(KERNEL_STACK_SIZE);
-	
-	if (stack == NULL) 
-	{
-		panic("create_user_kern_stack: kmalloc failed");
-	}
-	
-	// Get the bottom page address (guard page)
-	uint32 guard_va = (uint32)stack;
-	
-	// Get the page table for this virtual address
-	uint32* page_table = NULL;
-	get_page_table(ptr_user_page_directory, guard_va, &page_table);
-	
-	if (page_table != NULL) 
-	{
-		// Remove present bit to mark as guard page
-		page_table[PTX(guard_va)] = page_table[PTX(guard_va)] & (~PERM_PRESENT);
-		
-		// Clear TLB entry
-		tlb_invalidate(ptr_user_page_directory, (void*)guard_va);
-	}
-	
-	return stack;
-}
-
-//===============================
-// HELPER: env_page_ws_invalidate
-//===============================
-void env_page_ws_invalidate(struct Env* e, uint32 virtual_address)
-{
-#if USE_KHEAP
-	// Search in the working set list
-	struct WorkingSetElement *element = NULL;
-	struct WorkingSetElement *current = NULL;
-	
-	LIST_FOREACH(current, &(e->page_WS_list))
-	{
-		if (current->virtual_address == virtual_address)
-		{
-			element = current;
-			break;
-		}
-	}
-	
-	if (element != NULL)
-	{
-		// Update clock hand if needed
-		if (e->page_last_WS_element == element)
-		{
-			e->page_last_WS_element = LIST_NEXT(element);
-			if (e->page_last_WS_element == NULL)
-			{
-				e->page_last_WS_element = LIST_FIRST(&(e->page_WS_list));
-			}
-		}
-		
-		// Remove from list
-		LIST_REMOVE(&(e->page_WS_list), element);
-		
-		// Free memory
-		kfree(element);
-		
-		// Unmap the page
-		unmap_frame(e->env_page_directory, virtual_address);
-	}
-#else
-	// Search in working set array
-	uint32 wsSize = env_page_ws_get_size(e);
-	int found = -1;
-	
-	for (int i = 0; i < wsSize; i++)
-	{
-		if (e->ptr_pageWorkingSet[i].virtual_address == virtual_address)
-		{
-			found = i;
-			break;
-		}
-	}
-	
-	if (found != -1)
-	{
-		// Shift all elements after the found one
-		for (int i = found; i < wsSize - 1; i++)
-		{
-			e->ptr_pageWorkingSet[i] = e->ptr_pageWorkingSet[i + 1];
-		}
-		
-		// Clear last element
-		e->ptr_pageWorkingSet[wsSize - 1].virtual_address = 0;
-		e->ptr_pageWorkingSet[wsSize - 1].time_stamp = 0;
-		e->ptr_pageWorkingSet[wsSize - 1].sweeps_counter = 0;
-		
-		// Adjust clock hand
-		if (e->page_last_WS_index >= wsSize - 1)
-		{
-			e->page_last_WS_index = 0;
-		}
-		
-		// Unmap the page
-		unmap_frame(e->env_page_directory, virtual_address);
-	}
-#endif
-}
-
-//===============================
-// HELPER: env_page_ws_print
-//===============================
-void env_page_ws_print(struct Env* e)
-{
-	cprintf("\n===== Working Set for Process [%s] =====\n", e->prog_name);
-	cprintf("Process ID: %d\n", e->env_id);
-	cprintf("Max WS Size: %d\n", e->page_WS_max_size);
-	
-#if USE_KHEAP
-	uint32 size = LIST_SIZE(&(e->page_WS_list));
-	cprintf("Current WS Size: %d\n\n", size);
-	
-	if (size == 0)
-	{
-		cprintf("Working Set is EMPTY\n");
-		cprintf("=========================================\n\n");
-		return;
-	}
-	
-	cprintf("Index  Virtual_Addr  Used  Modified  Present\n");
-	cprintf("-----  ------------  ----  --------  -------\n");
-	
-	struct WorkingSetElement *element = NULL;
-	int index = 0;
-	
-	LIST_FOREACH(element, &(e->page_WS_list))
-	{
-		uint32 va = element->virtual_address;
-		uint32 perms = pt_get_page_permissions(e->env_page_directory, va);
-		
-		char marker = ' ';
-		if (element == e->page_last_WS_element)
-		{
-			marker = '*';
-		}
-		
-		cprintf("%c%-4d  0x%08x    %-4s  %-8s  %-7s\n", 
-		        marker,
-		        index,
-		        va,
-		        (perms & PERM_USED) ? "YES" : "NO",
-		        (perms & PERM_MODIFIED) ? "YES" : "NO",
-		        (perms & PERM_PRESENT) ? "YES" : "NO");
-		
-		index++;
-	}
-	
-	cprintf("\n* = Clock Hand Position\n");
-	
-#else
-	uint32 size = env_page_ws_get_size(e);
-	cprintf("Current WS Size: %d\n\n", size);
-	
-	if (size == 0)
-	{
-		cprintf("Working Set is EMPTY\n");
-		cprintf("=========================================\n\n");
-		return;
-	}
-	
-	cprintf("Index  Virtual_Addr  Used  Modified  Present\n");
-	cprintf("-----  ------------  ----  --------  -------\n");
-	
-	for (int i = 0; i < size; i++)
-	{
-		uint32 va = e->ptr_pageWorkingSet[i].virtual_address;
-		uint32 perms = pt_get_page_permissions(e->env_page_directory, va);
-		
-		char marker = ' ';
-		if (i == e->page_last_WS_index)
-		{
-			marker = '*';
-		}
-		
-		cprintf("%c%-4d  0x%08x    %-4s  %-8s  %-7s\n", 
-		        marker,
-		        i,
-		        va,
-		        (perms & PERM_USED) ? "YES" : "NO",
-		        (perms & PERM_MODIFIED) ? "YES" : "NO",
-		        (perms & PERM_PRESENT) ? "YES" : "NO");
-	}
-	
-	cprintf("\n* = Clock Hand Position\n");
-#endif
-	
-	cprintf("=========================================\n\n");
-}
-
-//===============================
-// HELPER: env_page_ws_list_create_element
-//===============================
-struct WorkingSetElement* env_page_ws_list_create_element(struct Env* e, uint32 virtual_address)
-{
-#if USE_KHEAP
-	// Allocate memory for new element
-	struct WorkingSetElement* element = (struct WorkingSetElement*)kmalloc(sizeof(struct WorkingSetElement));
-	
-	if (element == NULL)
-	{
-		panic("env_page_ws_list_create_element: kmalloc failed");
-	}
-	
-	// Initialize the element fields
-	element->virtual_address = virtual_address;
-	element->time_stamp = 0;
-	element->sweeps_counter = 0;
-	element->prev_next_info.le_next = NULL;
-	element->prev_next_info.le_prev = NULL;
-	
-	return element;
-#else
-	panic("env_page_ws_list_create_element: called with array mode");
-	return NULL;
 #endif
 }
 
@@ -579,7 +292,11 @@ void page_fault_handler(struct Env * faulted_env, uint32 fault_va)
 		}
 	}
 }
+
 void __page_fault_handler_with_buffering(struct Env * curenv, uint32 fault_va)
 {
 	panic("this function is not required...!!");
 }
+
+
+

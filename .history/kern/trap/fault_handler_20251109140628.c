@@ -108,7 +108,6 @@ void fault_handler(struct Trapframe *tf)
 	}
 	else
 	{
-    
 		before_last_fault_va = last_fault_va;
 		before_last_eip = last_eip;
 		num_repeated_fault = 0;

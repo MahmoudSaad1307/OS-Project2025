@@ -108,7 +108,6 @@ void fault_handler(struct Trapframe *tf)
 	}
 	else
 	{
-    
 		before_last_fault_va = last_fault_va;
 		before_last_eip = last_eip;
 		num_repeated_fault = 0;
@@ -288,7 +287,7 @@ void* create_user_kern_stack(uint32* ptr_user_page_directory)
 {
 	//TODO: [PROJECT'25.GM#3] FAULT HANDLER I - #1 create_user_kern_stack
 	
-	// Allocate kernel stack memory
+	// Allocate the kernel stack
 	void* stack = kmalloc(KERNEL_STACK_SIZE);
 	
 	if (stack == NULL) 
@@ -296,220 +295,23 @@ void* create_user_kern_stack(uint32* ptr_user_page_directory)
 		panic("create_user_kern_stack: kmalloc failed");
 	}
 	
-	// Get the bottom page address (guard page)
+	// Get the address of the guard page (bottom of stack)
 	uint32 guard_va = (uint32)stack;
 	
-	// Get the page table for this virtual address
+	// Get page table for guard page
 	uint32* page_table = NULL;
 	get_page_table(ptr_user_page_directory, guard_va, &page_table);
 	
 	if (page_table != NULL) 
 	{
-		// Remove present bit to mark as guard page
+		// Clear present bit to mark as not present
 		page_table[PTX(guard_va)] = page_table[PTX(guard_va)] & (~PERM_PRESENT);
 		
-		// Clear TLB entry
+		// Invalidate TLB
 		tlb_invalidate(ptr_user_page_directory, (void*)guard_va);
 	}
 	
 	return stack;
-}
-
-//===============================
-// HELPER: env_page_ws_invalidate
-//===============================
-void env_page_ws_invalidate(struct Env* e, uint32 virtual_address)
-{
-#if USE_KHEAP
-	// Search in the working set list
-	struct WorkingSetElement *element = NULL;
-	struct WorkingSetElement *current = NULL;
-	
-	LIST_FOREACH(current, &(e->page_WS_list))
-	{
-		if (current->virtual_address == virtual_address)
-		{
-			element = current;
-			break;
-		}
-	}
-	
-	if (element != NULL)
-	{
-		// Update clock hand if needed
-		if (e->page_last_WS_element == element)
-		{
-			e->page_last_WS_element = LIST_NEXT(element);
-			if (e->page_last_WS_element == NULL)
-			{
-				e->page_last_WS_element = LIST_FIRST(&(e->page_WS_list));
-			}
-		}
-		
-		// Remove from list
-		LIST_REMOVE(&(e->page_WS_list), element);
-		
-		// Free memory
-		kfree(element);
-		
-		// Unmap the page
-		unmap_frame(e->env_page_directory, virtual_address);
-	}
-#else
-	// Search in working set array
-	uint32 wsSize = env_page_ws_get_size(e);
-	int found = -1;
-	
-	for (int i = 0; i < wsSize; i++)
-	{
-		if (e->ptr_pageWorkingSet[i].virtual_address == virtual_address)
-		{
-			found = i;
-			break;
-		}
-	}
-	
-	if (found != -1)
-	{
-		// Shift all elements after the found one
-		for (int i = found; i < wsSize - 1; i++)
-		{
-			e->ptr_pageWorkingSet[i] = e->ptr_pageWorkingSet[i + 1];
-		}
-		
-		// Clear last element
-		e->ptr_pageWorkingSet[wsSize - 1].virtual_address = 0;
-		e->ptr_pageWorkingSet[wsSize - 1].time_stamp = 0;
-		e->ptr_pageWorkingSet[wsSize - 1].sweeps_counter = 0;
-		
-		// Adjust clock hand
-		if (e->page_last_WS_index >= wsSize - 1)
-		{
-			e->page_last_WS_index = 0;
-		}
-		
-		// Unmap the page
-		unmap_frame(e->env_page_directory, virtual_address);
-	}
-#endif
-}
-
-//===============================
-// HELPER: env_page_ws_print
-//===============================
-void env_page_ws_print(struct Env* e)
-{
-	cprintf("\n===== Working Set for Process [%s] =====\n", e->prog_name);
-	cprintf("Process ID: %d\n", e->env_id);
-	cprintf("Max WS Size: %d\n", e->page_WS_max_size);
-	
-#if USE_KHEAP
-	uint32 size = LIST_SIZE(&(e->page_WS_list));
-	cprintf("Current WS Size: %d\n\n", size);
-	
-	if (size == 0)
-	{
-		cprintf("Working Set is EMPTY\n");
-		cprintf("=========================================\n\n");
-		return;
-	}
-	
-	cprintf("Index  Virtual_Addr  Used  Modified  Present\n");
-	cprintf("-----  ------------  ----  --------  -------\n");
-	
-	struct WorkingSetElement *element = NULL;
-	int index = 0;
-	
-	LIST_FOREACH(element, &(e->page_WS_list))
-	{
-		uint32 va = element->virtual_address;
-		uint32 perms = pt_get_page_permissions(e->env_page_directory, va);
-		
-		char marker = ' ';
-		if (element == e->page_last_WS_element)
-		{
-			marker = '*';
-		}
-		
-		cprintf("%c%-4d  0x%08x    %-4s  %-8s  %-7s\n", 
-		        marker,
-		        index,
-		        va,
-		        (perms & PERM_USED) ? "YES" : "NO",
-		        (perms & PERM_MODIFIED) ? "YES" : "NO",
-		        (perms & PERM_PRESENT) ? "YES" : "NO");
-		
-		index++;
-	}
-	
-	cprintf("\n* = Clock Hand Position\n");
-	
-#else
-	uint32 size = env_page_ws_get_size(e);
-	cprintf("Current WS Size: %d\n\n", size);
-	
-	if (size == 0)
-	{
-		cprintf("Working Set is EMPTY\n");
-		cprintf("=========================================\n\n");
-		return;
-	}
-	
-	cprintf("Index  Virtual_Addr  Used  Modified  Present\n");
-	cprintf("-----  ------------  ----  --------  -------\n");
-	
-	for (int i = 0; i < size; i++)
-	{
-		uint32 va = e->ptr_pageWorkingSet[i].virtual_address;
-		uint32 perms = pt_get_page_permissions(e->env_page_directory, va);
-		
-		char marker = ' ';
-		if (i == e->page_last_WS_index)
-		{
-			marker = '*';
-		}
-		
-		cprintf("%c%-4d  0x%08x    %-4s  %-8s  %-7s\n", 
-		        marker,
-		        i,
-		        va,
-		        (perms & PERM_USED) ? "YES" : "NO",
-		        (perms & PERM_MODIFIED) ? "YES" : "NO",
-		        (perms & PERM_PRESENT) ? "YES" : "NO");
-	}
-	
-	cprintf("\n* = Clock Hand Position\n");
-#endif
-	
-	cprintf("=========================================\n\n");
-}
-
-//===============================
-// HELPER: env_page_ws_list_create_element
-//===============================
-struct WorkingSetElement* env_page_ws_list_create_element(struct Env* e, uint32 virtual_address)
-{
-#if USE_KHEAP
-	// Allocate memory for new element
-	struct WorkingSetElement* element = (struct WorkingSetElement*)kmalloc(sizeof(struct WorkingSetElement));
-	
-	if (element == NULL)
-	{
-		panic("env_page_ws_list_create_element: kmalloc failed");
-	}
-	
-	// Initialize the element fields
-	element->virtual_address = virtual_address;
-	element->time_stamp = 0;
-	element->sweeps_counter = 0;
-	element->prev_next_info.le_next = NULL;
-	element->prev_next_info.le_prev = NULL;
-	
-	return element;
-#else
-	panic("env_page_ws_list_create_element: called with array mode");
-	return NULL;
-#endif
 }
 
 //=========================
@@ -543,9 +345,96 @@ void page_fault_handler(struct Env * faulted_env, uint32 fault_va)
 	if(wsSize < (faulted_env->page_WS_max_size))
 	{
 		//TODO: [PROJECT'25.GM#3] FAULT HANDLER I - #3 placement
-		//Your code is here
-		//Comment the following line
-		panic("page_fault_handler().PLACEMENT is not implemented yet...!!");
+		
+		// Align address to page boundary
+		fault_va = ROUNDDOWN(fault_va, PAGE_SIZE);
+		
+		// Allocate new frame
+		struct FrameInfo* frame = NULL;
+		int result = allocate_frame(&frame);
+		
+		if (result != 0 || frame == NULL) 
+		{
+			panic("page_fault_handler: can't allocate frame");
+		}
+		
+		// Map frame to virtual address
+		result = map_frame(faulted_env->env_page_directory, frame, 
+						   (void*)fault_va, PERM_USER | PERM_WRITEABLE | PERM_PRESENT);
+		
+		if (result != 0) 
+		{
+			panic("page_fault_handler: can't map frame");
+		}
+		
+		// Try to read page from disk
+		result = pf_read_env_page(faulted_env, (void*)fault_va);
+		
+		// If page not on disk
+		if (result == E_PAGE_NOT_EXIST_IN_PF) 
+		{
+			// Check if stack page
+			int is_stack = 0;
+			if (fault_va >= USTACKTOP - USTACKSIZE && fault_va < USTACKTOP) 
+			{
+				is_stack = 1;
+			}
+			
+			// Check if heap page
+			int is_heap = 0;
+			uint32* page_table = NULL;
+			get_page_table(faulted_env->env_page_directory, fault_va, &page_table);
+			
+			if (page_table != NULL) 
+			{
+				uint32 pte = page_table[PTX(fault_va)];
+				if (pte & PERM_UHPAGE) 
+				{
+					is_heap = 1;
+				}
+			}
+			
+			// If not stack or heap, reject
+			if (is_stack == 0 && is_heap == 0) 
+			{
+				cprintf("[%08x] page fault va %08x: not in file and not stack/heap\n",
+						faulted_env->env_id, fault_va);
+				unmap_frame(faulted_env->env_page_directory, (void*)fault_va);
+				env_exit();
+				return;
+			}
+			
+			// Zero initialize
+			memset((void*)fault_va, 0, PAGE_SIZE);
+		}
+		
+		// Create working set element
+		struct WorkingSetElement* ws_element = 
+			env_page_ws_list_create_element(faulted_env, fault_va);
+		
+		if (ws_element == NULL) 
+		{
+			panic("page_fault_handler: can't create ws element");
+		}
+		
+		// Add to working set list
+		if (wsSize == 0) 
+		{
+			LIST_INSERT_HEAD(&(faulted_env->page_WS_list), ws_element);
+		} 
+		else 
+		{
+			LIST_INSERT_TAIL(&(faulted_env->page_WS_list), ws_element);
+		}
+		
+		// Update size
+		faulted_env->page_WS_size++;
+		
+		// If full now, point to first element
+		if (faulted_env->page_WS_size == faulted_env->page_WS_max_size) 
+		{
+			faulted_env->page_last_WS_element = LIST_FIRST(&(faulted_env->page_WS_list));
+		}
 	}
 	else
 	{
@@ -556,7 +445,7 @@ void page_fault_handler(struct Env * faulted_env, uint32 fault_va)
 			//Comment the following line
 			panic("page_fault_handler().REPLACEMENT is not implemented yet...!!");
 		}
-		else if (isPageReplacmentAlgorithmOPTIMAL())
+		else if (isPageReplacmentAlgorithmCLOCK())
 		{
 			//TODO: [PROJECT'25.IM#1] FAULT HANDLER II - #3 Clock Replacement
 			//Your code is here
@@ -579,6 +468,7 @@ void page_fault_handler(struct Env * faulted_env, uint32 fault_va)
 		}
 	}
 }
+
 void __page_fault_handler_with_buffering(struct Env * curenv, uint32 fault_va)
 {
 	panic("this function is not required...!!");
