@@ -77,13 +77,4 @@ void dyn_alloc_local_scope_method(struct Env * curenv, uint32 fault_va);
 void page_fault_handler(struct Env * curenv, uint32 fault_va);
 void table_fault_handler(struct Env * curenv, uint32 fault_va);
 /*2025*/ int get_optimal_num_faults(struct WS_List *initWorkingSet, int maxWSSize, struct PageRef_List *pageReferences);
-
-//===============================
-// KERNEL STACK & WORKING SET HELPERS
-//===============================
-void* create_user_kern_stack(uint32* ptr_user_page_directory);
-void env_page_ws_invalidate(struct Env* e, uint32 virtual_address);
-void env_page_ws_print(struct Env* e);
-struct WorkingSetElement* env_page_ws_list_create_element(struct Env* e, uint32 virtual_address);
-
 #endif /* KERN_FAULT_HANDLER_H_ */
